@@ -1,0 +1,37 @@
+name: math_teacher
+description: Offline classroom assistant for teachers of any subject (quiz, classes, timetable, daily notes).
+publish_to: 'none'
+version: 1.1.0+2
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: any            # version is pinned automatically by flutter_localizations
+  sqflite: ^2.3.3      # offline SQLite database
+  crypto: ^3.0.3             # hashes the optional password
+  path: ^1.9.0
+  flutter_tts: ^4.0.2  # Text-to-Speech ("أحسنت")
+  confetti: ^0.7.0     # celebration animation
+  audioplayers: ^6.0.0 # success chime (assets/sounds/success.wav)
+  table_calendar: ^3.1.2
+  google_fonts: ^6.2.1 # Cairo font (bundled in assets/google_fonts for offline use)
+  file_selector: ^1.0.3      # pick PDF / Word / image files
+  image_picker: ^1.1.2       # take photos with the camera
+  path_provider: ^2.1.4      # private storage for library files
+  open_filex: ^4.5.0         # open PDF / Word in the phone's viewer
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/sounds/
+    - assets/google_fonts/
