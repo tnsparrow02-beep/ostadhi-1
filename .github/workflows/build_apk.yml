@@ -1,0 +1,150 @@
+name: Build & Release Android APK
+
+# Runs on every push to the main branch (and can be started by hand from the Actions tab).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# "contents: write" is required to publish the GitHub Release that holds the APK.
+permissions:
+  contents: write
+
+# A newer push cancels the build still running for the previous one.
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # Flat repository: every file sits at the root. We put them in the right folders.
+      - name: Prepare project folders
+        run: |
+          mkdir -p lib assets/sounds assets/google_fonts
+          # v1.7.1: the PIN lock was removed; delete its old files if they are still in the repo.
+          rm -f lock_gate.dart app_lock.dart pin_screen.dart
+          mv -f ./*.dart lib/ 2>/dev/null || true
+          if [ -f success.wav ]; then mv -f success.wav assets/sounds/success.wav; fi
+          [ -f assets/google_fonts/README.txt ] || echo "Cairo fonts (optional)" > assets/google_fonts/README.txt
+          if [ ! -f assets/sounds/success.wav ]; then
+            python3 - <<'PY'
+          import wave, struct, math
+          sr=44100; n=int(sr*1.5)
+          notes=[(523.25,0.0),(659.25,0.11),(783.99,0.22),(1046.5,0.33)]
+          s=[0.0]*n
+          for f,st in notes:
+              o=int(st*sr)
+              for i in range(o,n):
+                  t=(i-o)/sr
+                  env=math.exp(-3.0*t)*min(1.0,t/0.004)
+                  s[i]+=(math.sin(2*math.pi*f*t)+0.3*math.sin(4*math.pi*f*t)+0.1*math.sin(6*math.pi*f*t))*env
+          k=0.85/max(abs(x) for x in s)
+          w=wave.open('assets/sounds/success.wav','wb')
+          w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+          w.writeframes(b''.join(struct.pack('<h',int(x*k*32767)) for x in s))
+          w.close()
+          PY
+          fi
+
+      # The project now holds pubspec.yaml, lib/ and assets/ (android/ is git-ignored).
+      # We generate the Android project, then put our own files back on top of it.
+      - name: Generate Android scaffolding
+        run: |
+          if [ ! -d android ]; then
+            mkdir /tmp/keep && cp -r pubspec.yaml lib assets /tmp/keep/
+            flutter create --org com.teacher --project-name math_teacher --platforms android .
+            cp /tmp/keep/pubspec.yaml pubspec.yaml
+            rm -rf lib assets && cp -r /tmp/keep/lib lib && cp -r /tmp/keep/assets assets
+            rm -rf test
+          fi
+
+      # Lets the app see the Text-to-Speech engine on Android 11+ and sets the app name.
+      - name: Patch AndroidManifest (TTS + label)
+        run: |
+          F=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "TTS_SERVICE" "$F"; then
+            sed -i 's#<application#<queries><intent><action android:name="android.intent.action.TTS_SERVICE"/></intent><intent><action android:name="android.media.action.IMAGE_CAPTURE"/></intent><intent><action android:name="android.intent.action.VIEW"/><data android:mimeType="*/*"/></intent></queries>\n    <application#' "$F"
+          fi
+          sed -i 's#android:label="[^"]*"#android:label="Ostadhi"#' "$F"
+          # Student photos can be web links: release builds need the INTERNET permission.
+          if ! grep -q 'android.permission.INTERNET' "$F"; then
+            sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' "$F"
+          fi
+
+      # Replaces the default Flutter icon with icon.png (the app icon).
+      # If anything goes wrong here, the build continues with the default icon.
+      - name: App icon
+        continue-on-error: true
+        run: |
+          if [ -f icon.png ]; then
+            pip install --quiet pillow
+            python3 - <<'PY'
+          from PIL import Image
+          sizes = {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}
+          img = Image.open('icon.png').convert('RGBA')
+          for name, px in sizes.items():
+              img.resize((px, px), Image.LANCZOS).save(f'android/app/src/main/res/mipmap-{name}/ic_launcher.png')
+          PY
+          fi
+
+      # Android Lint (an optional checker) crashes during the release build with some plugins.
+      # The APK does not need it, so it is switched off for release builds.
+      - name: Disable Android lint on release
+        run: |
+          F=android/app/build.gradle.kts
+          if [ -f "$F" ]; then
+            if ! grep -q "checkReleaseBuilds" "$F"; then
+              sed -i '0,/^android {/s//android {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }/' "$F"
+            fi
+          else
+            F=android/app/build.gradle
+            if ! grep -q "checkReleaseBuilds" "$F"; then
+              sed -i '0,/^android {/s//android {\n    lint {\n        checkReleaseBuilds false\n        abortOnError false\n    }/' "$F"
+            fi
+          fi
+          grep -n "checkReleaseBuilds" "$F"
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release --build-number=${{ github.run_number }} --build-name=1.7.${{ github.run_number }}
+
+      - name: Name the APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk "Ostadhi-v1.7.${{ github.run_number }}.apk"
+
+      # Download from: Actions tab > this run > Artifacts
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ostadhi-apk
+          path: Ostadhi-v1.7.${{ github.run_number }}.apk
+
+      # Download from: repository main page > Releases (right column)
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.7.${{ github.run_number }}
+          name: Ostadhi v1.7.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          files: Ostadhi-v1.7.${{ github.run_number }}.apk
+          make_latest: true
+          generate_release_notes: true
